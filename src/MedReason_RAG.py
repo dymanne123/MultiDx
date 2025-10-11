@@ -33,26 +33,24 @@ def tokenize(text):
     return re.findall(r'\w+', text.lower())
 
 def generate_top5_case_reports(data_train, data_test, index):
-    """
-    使用 BM25 检索 top-5 相似案例，并将每个相似 case 包装成完整格式（包括 CASE PRESENTATION, think, answer）
-    """
+    
 
-    # 获取当前测试病例
+   
     test_case_prompt = data_test[index]['case_prompt']
     tokenized_query = tokenize(test_case_prompt)
 
-    # 准备语料库
+ 
     train_prompts = [item['case_prompt'] for item in data_train]
     tokenized_corpus = [tokenize(text) for text in train_prompts]
 
-    # 构建 BM25 模型
+
     bm25 = BM25Okapi(tokenized_corpus)
 
-    # 计算相似度分数
+  
     scores = bm25.get_scores(tokenized_query)
     top5_indices = np.argsort(scores)[-15:][::-1]
 
-    # 构建每个相似案例的完整输出
+   
     all_outputs = []
     for idx in top5_indices:
         case = data_train[int(idx)]
@@ -183,7 +181,7 @@ def run_one_batch_ICL(input_prompts, samples, file_paths, max_new_tokens=512):
     None
     '''
    
-    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
+    client = OpenAI(api_key="", base_url="https://api.deepseek.com")
 
     for j in range(len(input_prompts)):
         prompt = input_prompts[j]
@@ -225,7 +223,7 @@ def run_one_batch_refine(input_prompts, samples, file_paths, max_new_tokens=512)
     None
     '''
    
-    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
+    client = OpenAI(api_key="", base_url="https://api.deepseek.com")
     max_iters = 3
     for j in range(len(input_prompts)):
         prompt = input_prompts[j]
