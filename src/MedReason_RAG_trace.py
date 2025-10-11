@@ -1,0 +1,397 @@
+import sys
+import os
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from datasets import load_dataset
+from utlis import *
+from tqdm import tqdm
+from openai import OpenAI
+import time
+from rank_bm25 import BM25Okapi
+import numpy as np
+import re
+#from Models import *
+#from prompt_generation import *
+import argparse
+import scispacy
+import spacy
+from scispacy.abbreviation import AbbreviationDetector
+
+nlp = spacy.load("en_core_sci_sm")
+nlp.add_pipe("abbreviation_detector")
+def parse_args():
+    parser = argparse.ArgumentParser()
+    #parser.add_argument('--dataset', type=str)
+    parser.add_argument('--model', type=str)
+    parser.add_argument('--num_shot', type=str)
+    return parser.parse_args()
+
+def load_test_data(args):
+    """Loads the test dataset based on the provided arguments."""
+    dataset = load_dataset("zou-lab/MedCaseReasoning", "default") 
+    dataset_test=dataset['test']
+    return dataset_test
+def load_train_data(args):
+    """Loads the test dataset based on the provided arguments."""
+    dataset = load_dataset("zou-lab/MedCaseReasoning", "default") 
+    dataset_train=dataset['train']
+    return dataset_train
+def tokenize(text):
+    return re.findall(r'\w+', text.lower())
+
+def generate_top5_case_reports(data_train, data_test, index):
+    """
+    使用 BM25 检索 top-5 相似案例，并将每个相似 case 包装成完整格式（包括 CASE PRESENTATION, think, answer）
+    """
+
+    # 获取当前测试病例
+    test_case_prompt = data_test[index]['case_prompt']
+    tokenized_query = tokenize(test_case_prompt)
+
+    # 准备语料库
+    train_prompts = [item['case_prompt'] for item in data_train]
+    tokenized_corpus = [tokenize(text) for text in train_prompts]
+
+    # 构建 BM25 模型
+    bm25 = BM25Okapi(tokenized_corpus)
+
+    # 计算相似度分数
+    scores = bm25.get_scores(tokenized_query)
+    top5_indices = np.argsort(scores)[-2:][::-1]
+
+    # 构建每个相似案例的完整输出
+    all_outputs = []
+    for idx in top5_indices:
+        case = data_train[int(idx)]
+        prompt = case.get('case_prompt', '').strip()
+        reasoning = case.get('diagnostic_reasoning', 'No reasoning provided.').strip()
+        diagnosis = case.get('final_diagnosis', 'Unknown')
+
+        output = (
+            "----------------------------------------\n"
+            "CASE PRESENTATION\n"
+            "----------------------------------------\n"
+            f"{prompt}\n"
+            "----------------------------------------\n"
+            "OUTPUT\n"
+            "----------------------------------------\n"
+            "<think>\n"
+            f"{reasoning}\n"
+            "</think>\n"
+            f"<answer>{diagnosis}</answer>\n"
+        )
+
+        all_outputs.append(output)
+    tail=(
+        "----------------------------------------\n"
+        "CASE PRESENTATION\n"
+        "----------------------------------------\n"
+    )
+    all_outputs.append(tail)
+
+    return "\n\n".join(all_outputs)
+def extract_entities(text):
+    """
+    使用 scispaCy 提取医学实体
+    """
+    doc = nlp(text)
+    return set(ent.text.lower() for ent in doc.ents)
+
+def jaccard_similarity(set1, set2):
+    if not set1 or not set2:
+        return 0.0
+    return len(set1 & set2) / len(set1 | set2)
+
+def extract_numbered_reasoning_items(reasoning_text):
+    """
+    提取形如 '1. ...', '2. ...' 的推理段落
+    """
+    pattern = r'\d+\.\s+[^0-9]+(?=(?:\d+\.|\Z))'
+    matches = re.findall(pattern, reasoning_text.strip(), flags=re.DOTALL)
+    return [m.strip() for m in matches]
+
+def build_reasoning_entity_cache(train_data):
+    """
+    构建训练集中所有推理项及其实体的缓存列表
+    :return: List of tuples: (item_idx, reasoning_text, reasoning_entities)
+    """
+    cache = []
+    for item_idx, item in enumerate(train_data):
+        diagnostic_reasoning = item.get("diagnostic_reasoning", "")
+        numbered_items = extract_numbered_reasoning_items(diagnostic_reasoning)
+        for reasoning in numbered_items:
+            reasoning_entities = extract_entities(reasoning)
+            cache.append((item_idx, reasoning, reasoning_entities))
+    return cache
+
+def get_top_k_reasoning_sentences_by_entity_similarity(query_text, reasoning_entity_cache, k=10):
+    """
+    根据实体 Jaccard 相似度，返回与 query_text 最相似的 k 条推理文本（无编号）
+    """
+    query_entities = extract_entities(query_text)
+
+    scored_items = []
+    for item_idx, reasoning_text, reasoning_entities in reasoning_entity_cache:
+        score = jaccard_similarity(query_entities, reasoning_entities)
+        scored_items.append((score, reasoning_text))
+
+    # 排序取 top-k
+    top_k = sorted(scored_items, key=lambda x: x[0], reverse=True)[:k]
+
+    # 清除编号前缀，拼接为按行分割的字符串
+    cleaned_lines = [re.sub(r'^\d+\.\s*', '', reasoning).strip() for score, reasoning in top_k]
+
+    return '\n'.join(cleaned_lines)
+def generate_and_save_prompts(data_train,data_test, folder_path, num_shot,args):
+    """Generates prompts, processes them in batches, and saves results."""
+    batch_size = 4
+    input_prompts = []
+    file_paths = []
+    samples = []
+    
+    for i in tqdm(range(len(data_test))):
+        file_path = f'{folder_path}/{str(i)}.json'
+        if os.path.exists(file_path):
+            continue
+
+        sample = data_test[i]
+        reasoning_entity_cache = build_reasoning_entity_cache(data_train)
+        example=get_top_k_reasoning_sentences_by_entity_similarity(
+    data_test[i]['case_prompt'],
+    reasoning_entity_cache,
+    k=10
+)
+        cur_prompt = my_generate_prompt_ICL(  
+            sample['case_prompt'],example,num_shot
+        )
+        input_prompts.append(cur_prompt)
+        samples.append(sample)
+        file_paths.append(file_path)
+
+        if len(input_prompts) >= batch_size:
+            run_one_batch_ICL(input_prompts, samples, file_paths)
+            input_prompts, file_paths, samples = [], [], []
+        if i==0:
+            print(cur_prompt)
+
+    if len(input_prompts) > 0:
+        run_one_batch_ICL(input_prompts, samples, file_paths)
+
+def my_generate_prompt_ICL(case_prompt,example,num_shot):
+    '''
+    Gnerate the prompt for the model
+
+    args:
+    story: the story, str
+    Q: the question, str
+    C: the candidates, list
+    Q_type: the question type, str
+
+    return:
+    prompt: the generated prompt, str
+    '''
+    file_path = f'../materials/MedReason/prompt_examples_input_RAG_trace.txt'
+    file_path_out = f'../materials/MedReason/prompt_examples_output_RAG.txt'
+    file_path_example = f'../materials/MedReason/example_{num_shot}.txt'
+
+    with open(file_path) as txt_file:
+        prompt_in = txt_file.read()
+    with open(file_path_out) as txt_file:
+        prompt_out = txt_file.read()
+
+    with open(file_path_example) as txt_file:
+        prompt_example = txt_file.read()
+    tail=(
+        "----------------------------------------\n"
+        "CASE PRESENTATION\n"
+        "----------------------------------------\n"
+    )
+    #prompt = f"{prompt_in}\nExample:\n\n{prompt_example}\n{case_prompt}\n{prompt_out}"
+    prompt = f"{prompt_in}\n{example}\n{tail}{case_prompt}\n{prompt_out}"
+
+    return prompt
+def my_generate_prompt_structured(case_prompt,num_shot):
+    '''
+    Gnerate the prompt for the model
+
+    args:
+    story: the story, str
+    Q: the question, str
+    C: the candidates, list
+    Q_type: the question type, str
+
+    return:
+    prompt: the generated prompt, str
+    '''
+    file_path = f'../materials/MedReason/prompt_structured.txt'
+    file_path_out = f'../materials/MedReason/prompt_examples_output.txt'
+    file_path_example = f'../materials/MedReason/example_{num_shot}.txt'
+
+    with open(file_path) as txt_file:
+        prompt_in = txt_file.read()
+    with open(file_path_out) as txt_file:
+        prompt_out = txt_file.read()
+
+    with open(file_path_example) as txt_file:
+        prompt_example = txt_file.read()
+    #prompt = f"{prompt_in}\nExample:\n\n{prompt_example}\n{case_prompt}\n{prompt_out}"
+    prompt = f"{prompt_in}\n{case_prompt}"
+
+    return prompt
+def run_one_batch_ICL(input_prompts, samples, file_paths, max_new_tokens=512):
+    '''
+    Generate the completion for one batch of input prompts
+
+    args:
+    input_prompts: the input prompts, list
+    samples: the samples, list
+    file_paths: the file paths to save the results, list
+    max_new_tokens: the maximum new tokens for the completion
+
+    return:
+    None
+    '''
+   
+    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
+
+    for j in range(len(input_prompts)):
+        prompt = input_prompts[j]
+        cur_sample = samples[j]
+
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-reasoner",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                stream=False
+            )
+
+            prediction = response.choices[0].message.content.strip()
+            cur_sample.update({'prediction': prediction})
+
+            with open(file_paths[j], 'w', encoding='utf-8') as json_file:
+                json.dump(cur_sample, json_file, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            print(f"[Error] Failed to generate for input {j}: {e}")
+
+
+    return
+
+def run_one_batch_refine(input_prompts, samples, file_paths, max_new_tokens=512):
+    '''
+    Generate the completion for one batch of input prompts
+
+    args:
+    input_prompts: the input prompts, list
+    samples: the samples, list
+    file_paths: the file paths to save the results, list
+    max_new_tokens: the maximum new tokens for the completion
+
+    return:
+    None
+    '''
+   
+    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
+    max_iters = 3
+    for j in range(len(input_prompts)):
+        prompt = input_prompts[j]
+        cur_sample = samples[j]
+
+        try:
+            messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+            ]
+            response = client.chat.completions.create(model="deepseek-reasoner", messages=messages)
+            y0 = response.choices[0].message.content.strip()
+
+            history = [{"output": y0, "feedback": ""}]
+            yt = y0  # Current output
+
+            ########################
+            # Step 2~N: Feedback → Refine
+            ########################
+            for t in range(max_iters):
+                # Generate Feedback
+                fb_prompt = f"""Please provide actionable and specific feedback to improve the following output.If the output is already good, you can say \"no improvements needed\" or \"looks good\".:
+                                Input: {prompt}
+                                Output: {yt}
+                                Feedback:"""
+
+                fb_response = client.chat.completions.create(
+                    model="deepseek-reasoner",
+                    messages=[
+                        {"role": "system", "content": "You are a critical feedback generator."},
+                        {"role": "user", "content": fb_prompt}
+                    ]
+                )
+                feedback = fb_response.choices[0].message.content.strip()
+
+                # Stopping condition
+                if "no improvements needed" in feedback.lower() or "looks good" in feedback.lower():
+                    break
+
+                # Refine the output
+                refine_prompt = f"""You are an assistant that improves answers based on user feedback.
+                                    Input: {prompt}
+                                    Previous Output: {yt}
+                                    Feedback: {feedback}
+                                    Improved Output:"""
+
+                refine_response = client.chat.completions.create(
+                    model="deepseek-reasoner",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that refines outputs."},
+                        {"role": "user", "content": refine_prompt}
+                    ]
+                )
+                yt = refine_response.choices[0].message.content.strip()
+                history.append({"output": yt, "feedback": feedback})
+
+            ########################
+            # Save Final Output
+            ########################
+            cur_sample.update({
+                'prediction': yt,
+                'self_refine_history': history  # Optional: saves all iterations
+            })
+
+            with open(file_paths[j], 'w', encoding='utf-8') as json_file:
+                json.dump(cur_sample, json_file, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            print(f"[Error] Failed to generate for input {j}: {e}")
+
+
+    return
+
+def main():
+    #time.sleep(3*60*60)
+    # 加载 scispaCy 模型（仅需加载一次）
+    
+    args = parse_args()
+    dataset_name="MedReason"
+    # Load dataset and initialize variables
+    data_test = load_test_data(args)
+    data_train = load_train_data(args)
+    
+    
+    #folder_path = f'../results/{dataset_name}_{args.model}_{args.num_shot}shot'
+    folder_path = f'../results/{dataset_name}_{args.model}_10shot_RAG_trace'
+    if not os.path.exists(folder_path):
+        os.mkdir(folder_path)
+    
+    # Print example prompts if specified
+    
+
+    # Initialize model and tokenizer
+    #model, tokenizer = initialize_model_and_tokenizer(model_name)
+
+    # Generate and save prompts
+    generate_and_save_prompts(data_train,data_test, folder_path, args.num_shot,args)
+
+
+if __name__ == "__main__":
+    main()
