@@ -189,7 +189,7 @@ def run_one_batch_ICL(input_prompts, samples, file_paths, max_new_tokens=512):
     None
     '''
    
-    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
+    client = OpenAI(api_key="", base_url="https://api.deepseek.com")
 
     for j in range(len(input_prompts)):
         prompt = input_prompts[j]
