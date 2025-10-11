@@ -1,0 +1,16 @@
+----------------------------------------
+OUTPUT TEMPLATE
+----------------------------------------
+<think>
+...your internal reasoning for the diagnosis...
+</think>
+<answer>
+...the name of the disease/entity...
+</answer>
+"""
+a_prompt = """<think>
+{reasoning}
+</think>
+<answer>
+{answer}
+</answer>
