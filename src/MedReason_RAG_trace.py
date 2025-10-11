@@ -39,26 +39,24 @@ def tokenize(text):
     return re.findall(r'\w+', text.lower())
 
 def generate_top5_case_reports(data_train, data_test, index):
-    """
-    使用 BM25 检索 top-5 相似案例，并将每个相似 case 包装成完整格式（包括 CASE PRESENTATION, think, answer）
-    """
+    
 
-    # 获取当前测试病例
+    
     test_case_prompt = data_test[index]['case_prompt']
     tokenized_query = tokenize(test_case_prompt)
 
-    # 准备语料库
+    
     train_prompts = [item['case_prompt'] for item in data_train]
     tokenized_corpus = [tokenize(text) for text in train_prompts]
 
-    # 构建 BM25 模型
+   
     bm25 = BM25Okapi(tokenized_corpus)
 
-    # 计算相似度分数
+   
     scores = bm25.get_scores(tokenized_query)
     top5_indices = np.argsort(scores)[-2:][::-1]
 
-    # 构建每个相似案例的完整输出
+   
     all_outputs = []
     for idx in top5_indices:
         case = data_train[int(idx)]
@@ -90,9 +88,7 @@ def generate_top5_case_reports(data_train, data_test, index):
 
     return "\n\n".join(all_outputs)
 def extract_entities(text):
-    """
-    使用 scispaCy 提取医学实体
-    """
+   
     doc = nlp(text)
     return set(ent.text.lower() for ent in doc.ents)
 
@@ -102,18 +98,13 @@ def jaccard_similarity(set1, set2):
     return len(set1 & set2) / len(set1 | set2)
 
 def extract_numbered_reasoning_items(reasoning_text):
-    """
-    提取形如 '1. ...', '2. ...' 的推理段落
-    """
+   
     pattern = r'\d+\.\s+[^0-9]+(?=(?:\d+\.|\Z))'
     matches = re.findall(pattern, reasoning_text.strip(), flags=re.DOTALL)
     return [m.strip() for m in matches]
 
 def build_reasoning_entity_cache(train_data):
-    """
-    构建训练集中所有推理项及其实体的缓存列表
-    :return: List of tuples: (item_idx, reasoning_text, reasoning_entities)
-    """
+   
     cache = []
     for item_idx, item in enumerate(train_data):
         diagnostic_reasoning = item.get("diagnostic_reasoning", "")
@@ -124,9 +115,7 @@ def build_reasoning_entity_cache(train_data):
     return cache
 
 def get_top_k_reasoning_sentences_by_entity_similarity(query_text, reasoning_entity_cache, k=10):
-    """
-    根据实体 Jaccard 相似度，返回与 query_text 最相似的 k 条推理文本（无编号）
-    """
+    
     query_entities = extract_entities(query_text)
 
     scored_items = []
@@ -251,7 +240,7 @@ def run_one_batch_ICL(input_prompts, samples, file_paths, max_new_tokens=512):
     None
     '''
    
-    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
+    client = OpenAI(api_key="", base_url="https://api.deepseek.com")
 
     for j in range(len(input_prompts)):
         prompt = input_prompts[j]
@@ -293,7 +282,7 @@ def run_one_batch_refine(input_prompts, samples, file_paths, max_new_tokens=512)
     None
     '''
    
-    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
+    client = OpenAI(api_key="", base_url="https://api.deepseek.com")
     max_iters = 3
     for j in range(len(input_prompts)):
         prompt = input_prompts[j]
