@@ -123,10 +123,10 @@ def get_top_k_reasoning_sentences_by_entity_similarity(query_text, reasoning_ent
         score = jaccard_similarity(query_entities, reasoning_entities)
         scored_items.append((score, reasoning_text))
 
-    # 排序取 top-k
+   
     top_k = sorted(scored_items, key=lambda x: x[0], reverse=True)[:k]
 
-    # 清除编号前缀，拼接为按行分割的字符串
+    
     cleaned_lines = [re.sub(r'^\d+\.\s*', '', reasoning).strip() for score, reasoning in top_k]
 
     return '\n'.join(cleaned_lines)
@@ -358,7 +358,7 @@ def run_one_batch_refine(input_prompts, samples, file_paths, max_new_tokens=512)
 
 def main():
     #time.sleep(3*60*60)
-    # 加载 scispaCy 模型（仅需加载一次）
+   
     
     args = parse_args()
     dataset_name="MedReason"
