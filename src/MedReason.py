@@ -44,11 +44,11 @@ def generate_and_save_prompts(data_test, folder_path, num_shot,args):
         file_paths.append(file_path)
 
         if len(input_prompts) >= batch_size:
-            run_one_batch_refine(input_prompts, samples, file_paths)
+            run_one_batch_ICL(input_prompts, samples, file_paths)
             input_prompts, file_paths, samples = [], [], []
 
     if len(input_prompts) > 0:
-        run_one_batch_refine(input_prompts, samples, file_paths)
+        run_one_batch_ICL(input_prompts, samples, file_paths)
 
 def my_generate_prompt_ICL(case_prompt,num_shot):
     '''
@@ -148,93 +148,7 @@ def run_one_batch_ICL(input_prompts, samples, file_paths, max_new_tokens=512):
 
     return
 
-def run_one_batch_refine(input_prompts, samples, file_paths, max_new_tokens=512):
-    '''
-    Generate the completion for one batch of input prompts
 
-    args:
-    input_prompts: the input prompts, list
-    samples: the samples, list
-    file_paths: the file paths to save the results, list
-    max_new_tokens: the maximum new tokens for the completion
-
-    return:
-    None
-    '''
-   
-    client = OpenAI(api_key="sk-02d4a2fab35745839b43885964d87b84", base_url="https://api.deepseek.com")
-    max_iters = 3
-    for j in range(len(input_prompts)):
-        prompt = input_prompts[j]
-        cur_sample = samples[j]
-
-        try:
-            messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
-            ]
-            response = client.chat.completions.create(model="deepseek-reasoner", messages=messages)
-            y0 = response.choices[0].message.content.strip()
-
-            history = [{"output": y0, "feedback": ""}]
-            yt = y0  # Current output
-
-            ########################
-            # Step 2~N: Feedback → Refine
-            ########################
-            for t in range(max_iters):
-                # Generate Feedback
-                fb_prompt = f"""Please provide actionable and specific feedback to improve the following output.If the output is already good, you can say \"no improvements needed\" or \"looks good\".:
-                                Input: {prompt}
-                                Output: {yt}
-                                Feedback:"""
-
-                fb_response = client.chat.completions.create(
-                    model="deepseek-reasoner",
-                    messages=[
-                        {"role": "system", "content": "You are a critical feedback generator."},
-                        {"role": "user", "content": fb_prompt}
-                    ]
-                )
-                feedback = fb_response.choices[0].message.content.strip()
-
-                # Stopping condition
-                if "no improvements needed" in feedback.lower() or "looks good" in feedback.lower():
-                    break
-
-                # Refine the output
-                refine_prompt = f"""You are an assistant that improves answers based on user feedback.
-                                    Input: {prompt}
-                                    Previous Output: {yt}
-                                    Feedback: {feedback}
-                                    Improved Output:"""
-
-                refine_response = client.chat.completions.create(
-                    model="deepseek-reasoner",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that refines outputs."},
-                        {"role": "user", "content": refine_prompt}
-                    ]
-                )
-                yt = refine_response.choices[0].message.content.strip()
-                history.append({"output": yt, "feedback": feedback})
-
-            ########################
-            # Save Final Output
-            ########################
-            cur_sample.update({
-                'prediction': yt,
-                'self_refine_history': history  # Optional: saves all iterations
-            })
-
-            with open(file_paths[j], 'w', encoding='utf-8') as json_file:
-                json.dump(cur_sample, json_file, ensure_ascii=False, indent=2)
-
-        except Exception as e:
-            print(f"[Error] Failed to generate for input {j}: {e}")
-
-
-    return
 
 def main():
     #time.sleep(3*60*60)
@@ -245,7 +159,7 @@ def main():
     
     
     #folder_path = f'../results/{dataset_name}_{args.model}_{args.num_shot}shot'
-    folder_path = f'../results/{dataset_name}_{args.model}_10shot_self_refine'
+    folder_path = f'../results/{dataset_name}_{args.model}_10shot'
     if not os.path.exists(folder_path):
         os.mkdir(folder_path)
     
