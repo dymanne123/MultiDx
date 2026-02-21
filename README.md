@@ -1,6 +1,6 @@
 Code implementation for MultiDx.
 
-First, obtaining predictions and evidence from different knowledge sources. We implemented the web search module based on deep research and modify the web search settings to block any websites that may potentially cause data leakage. 
+First, obtaining predictions and evidence from different knowledge sources. We implemented the web search module based on deep research and modify the web search settings to block any websites that may potentially cause data leakage. To run the components required for web search, you need to install the relevant dependencies under smolagents/open_deep_research. The related references and URLs are provided in our paper.
 Run:
 
 ```bash
